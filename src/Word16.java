@@ -1,7 +1,7 @@
 
 public class Word16 {
 
-    private Bit[] bits;
+    private final Bit[] bits;
 
     public Word16() {
         bits = new Bit[16];
@@ -80,19 +80,18 @@ public class Word16 {
             a.bits[i].not(result.bits[i]);
     }
 
+    @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append(bits[0].toString());
-        for (int i = 1; i < 16; i++) {
-            sb.append(",");
-            sb.append(bits[i].toString());
-        }
-//        for (int i = 0; i < 32; i++) {
-//            if (bits[i].getValue() == Bit.boolValues.TRUE)
-//                sb.append("1");
-//            else
-//                sb.append("0");
+        StringBuilder sb = new StringBuilder(16 * 2);
+//        sb.append(bits[0].toString());
+//        for (int i = 1; i < 16; i++) {
+//            sb.append(",");
+//            sb.append(bits[i].toString());
 //        }
+        for (int i = 0; i < 16; i++) {
+            sb.append(bits[i].toString());
+            sb.append(",");
+        }
         return sb.toString();
     }
 }

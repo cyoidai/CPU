@@ -3,7 +3,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class ProcessorTest {
-@Test
+    @Test
     public void testAdd() {
         String[] program = {
                 "add 10 r0",
