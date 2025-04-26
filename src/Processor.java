@@ -9,52 +9,64 @@ public class Processor {
     private final Word32 programCounter = new Word32();
     public final List<String> output = new LinkedList<>();
     private boolean halted = false;
+    private int clockCycles = 0;
 
-    private final Memory mem;
+//    private final Memory instructionCache;
+//    private final Memory l2;
+    private final InstructionCache instructionCache;
+    private final L2Cache l2;
     private final ALU alu = new ALU();
 
     public Processor(Memory m) {
-        mem = m;
+//        l2 = m;
+//        instructionCache = m;
+        l2 = new L2Cache(m);
+        instructionCache = new InstructionCache(l2);
         for (int i = 0; i < 32; i++)
             registers[i] = new Word32();
     }
 
     public void run() {
+        int counter = 0;
         while (!halted) {
             fetch();
             decode();
             execute();
             store();
+            counter++;
         }
+        System.out.println(String.format("Clock cycles: %d", clockCycles));
+        System.out.println(String.format("Instruction executions: %d", counter));
     }
 
     /** The current working instruction */
     private Word16 instruction = null;
-    private final Word16[] instructionCache = { new Word16(), new Word16() };
+    private final Word16[] instructions = { new Word16(), new Word16() };
     /** Marks the processor's instruction cache as invalid, requiring a new
-     * fetch from memory. Is true whenever the program counter is incremented by
-     * anything other than 1. */
+     * fetch from memory. Should be set to true whenever the program counter is
+     * incremented by anything other than 1. */
     private boolean flushInstructionCache = true;
 
     /**
      * Fetches the next instruction to run, updating {@code instruction}.
      */
     private void fetch() {
-        if (flushInstructionCache || instruction == instructionCache[1]) {
-            programCounter.copy(mem.address);
-            mem.read();
-            mem.value.getTopHalf(instructionCache[0]);
-            mem.value.getBottomHalf(instructionCache[1]);
-            instruction = instructionCache[0];
+        if (flushInstructionCache || instruction == instructions[1]) {
+            programCounter.copy(instructionCache.address);
+            instructionCache.read();
+            clockCycles += instructionCache.cycles;
+            instructionCache.value.getTopHalf(instructions[0]);
+            instructionCache.value.getBottomHalf(instructions[1]);
+            instruction = instructions[0];
             flushInstructionCache = false;
             return;
         }
-        instruction = instructionCache[1];
+        instruction = instructions[1];
     }
 
-    /** Can either be a standalone value or a references to register */
+    /** Can either be a standalone value or a reference to a register */
     private Word32 op1;
-    /** Always a references to a register */
+    /** Always a reference to a register */
     private Word32 op2;
     private void decode() {
         Word16 opcode = extractOpcode(instruction);
@@ -187,19 +199,31 @@ public class Processor {
             || opcode.equals(Instruction.SUBTRACT)
             || opcode.equals(Instruction.OR)
             || opcode.equals(Instruction.RIGHTSHIFT)
-            || opcode.equals(Instruction.COMPARE)
         ) {
             opcode.copy(alu.instruction);
             op1.copy(alu.op2);
             op2.copy(alu.op1);
             alu.doInstruction();
+            if (opcode.equals(Instruction.MULTIPLY))
+                clockCycles += 10;
+            else
+                clockCycles += 2;
             storeFlags.add(StoreFlag.INCREMENT_PC);
             storeFlags.add(StoreFlag.STORE_ALU);
+        } else if (opcode.equals(Instruction.COMPARE)) {
+            // same as above, but op1 and op2 swap places
+            opcode.copy(alu.instruction);
+            op1.copy(alu.op1);
+            op2.copy(alu.op2);
+            alu.doInstruction();
+            clockCycles += 2;
+            storeFlags.add(StoreFlag.INCREMENT_PC);
         } else if (opcode.equals(Instruction.SYSCALL)) {
             switch(TestConverter.toInt(op1)) {
                 case 0 -> printReg();
                 case 1 -> printMem();
             }
+            clockCycles += 1;
             storeFlags.add(StoreFlag.INCREMENT_PC);
         } else if (opcode.equals(Instruction.CALL)) {
             Word32 pc_copy = new Word32();
@@ -208,69 +232,81 @@ public class Processor {
             Adder.add(programCounter, one, pc_copy);
             stack.push(pc_copy);
             incrementPC(op1);
+            clockCycles += 1;
         } else if (opcode.equals(Instruction.RETURN)) {
             stack.pop().copy(programCounter);
             flushInstructionCache = true;
+            clockCycles += 1;
         } else if (opcode.equals(Instruction.BLE)) {
             if (alu.less.getValue() == Bit.boolValues.TRUE || alu.equal.getValue() == Bit.boolValues.TRUE)
                 incrementPC(op1);
             else
                 storeFlags.add(StoreFlag.INCREMENT_PC);
+            clockCycles += 1;
         } else if (opcode.equals(Instruction.BLT)) {
             if (alu.less.getValue() == Bit.boolValues.TRUE)
                 incrementPC(op1);
             else
                 storeFlags.add(StoreFlag.INCREMENT_PC);
+            clockCycles += 1;
         } else if (opcode.equals(Instruction.BGE)) {
             if (alu.less.getValue() == Bit.boolValues.FALSE || alu.equal.getValue() == Bit.boolValues.TRUE)
                 incrementPC(op1);
             else
                 storeFlags.add(StoreFlag.INCREMENT_PC);
+            clockCycles += 1;
         } else if (opcode.equals(Instruction.BGT)) {
             if (alu.less.getValue() == Bit.boolValues.FALSE)
                 incrementPC(op1);
             else
                 storeFlags.add(StoreFlag.INCREMENT_PC);
+            clockCycles += 1;
         } else if (opcode.equals(Instruction.BEQ)) {
             if (alu.equal.getValue() == Bit.boolValues.TRUE)
                 incrementPC(op1);
             else
                 storeFlags.add(StoreFlag.INCREMENT_PC);
+            clockCycles += 1;
         } else if (opcode.equals(Instruction.BNE)) {
             if (alu.equal.getValue() == Bit.boolValues.FALSE)
                 incrementPC(op1);
             else
                 storeFlags.add(StoreFlag.INCREMENT_PC);
+            clockCycles += 1;
         } else if (opcode.equals(Instruction.LOAD)) {
             Bit format = new Bit(false);
             instruction.getBitN(5, format);
             if (format.getValue() == Bit.boolValues.TRUE)
-                Adder.add(op1, op2, mem.address);
-            else
-                op2.copy(mem.address);
-            mem.read();
+                // immediate
+                Adder.add(op1, op2, l2.address);
+            else // 2r
+                op1.copy(l2.address);
+            l2.read();
+            clockCycles += l2.cycles;
             storeFlags.add(StoreFlag.INCREMENT_PC);
             storeFlags.add(StoreFlag.STORE_MEMORY);
         } else if (opcode.equals(Instruction.STORE)) {
-            op1.copy(mem.value);
-            op2.copy(mem.address);
-            mem.write();
+            op1.copy(l2.value);
+            op2.copy(l2.address);
+            l2.write();
+            clockCycles += l2.cycles;
             storeFlags.add(StoreFlag.INCREMENT_PC);
         } else if (opcode.equals(Instruction.COPY)) {
             op1.copy(op2);
+            clockCycles += 1;
             storeFlags.add(StoreFlag.INCREMENT_PC);
         } else if (opcode.equals(Instruction.HALT)) {
             halted = true;
-        } else {
+            clockCycles += 1;
+        } else
             throw new RuntimeException(String.format("Unknown opcode '%s'", opcode));
-        }
     }
 
     /**
      * Increments the program counter by 1.
      */
     private void incrementPC() {
-        if (instruction == instructionCache[1]) {
+        if (instruction == instructions[1]) {
             Word32 one = new Word32();
             one.setBitN(31, new Bit(true));
             Word32 tmp = new Word32();
@@ -291,9 +327,21 @@ public class Processor {
         flushInstructionCache = true;
     }
 
+    private enum StoreFlag { INCREMENT_PC, STORE_ALU, STORE_MEMORY }
+    private final EnumSet<StoreFlag> storeFlags = EnumSet.noneOf(StoreFlag.class);
+    private void store() {
+        if (storeFlags.contains(StoreFlag.INCREMENT_PC))
+            incrementPC();
+        if (storeFlags.contains(StoreFlag.STORE_ALU))
+            alu.result.copy(op2);
+        if (storeFlags.contains(StoreFlag.STORE_MEMORY))
+            l2.value.copy(op2);
+        storeFlags.clear();
+    }
+
     private void printReg() {
         for (int i = 0; i < 32; i++) {
-            var line = "r"+ i + ":" + registers[i];
+            var line = "r" + i + ":" + registers[i];
             output.add(line);
             System.out.println(line);
         }
@@ -304,24 +352,42 @@ public class Processor {
             Word32 addr = new Word32();
             Word32 value = new Word32();
             TestConverter.fromInt(i, addr);
-            addr.copy(mem.address);
-            mem.read();
-            mem.value.copy(value);
+            addr.copy(l2.address);
+            l2.read();
+            l2.value.copy(value);
             var line = i + ":" + value; // + "(" + TestConverter.toInt(value) + ")";
             output.add(line);
             System.out.println(line);
         }
     }
 
-    private enum StoreFlag { INCREMENT_PC, STORE_ALU, STORE_MEMORY }
-    private final EnumSet<StoreFlag> storeFlags = EnumSet.noneOf(StoreFlag.class);
-    private void store() {
-        if (storeFlags.contains(StoreFlag.INCREMENT_PC))
-            incrementPC();
-        if (storeFlags.contains(StoreFlag.STORE_ALU))
-            alu.result.copy(op2);
-        if (storeFlags.contains(StoreFlag.STORE_MEMORY))
-            mem.value.copy(op2);
-        storeFlags.clear();
+    private void debugReg(int... reg) {
+        for (int r : reg) {
+            var line = "r" + r + ":" + registers[r] + " " + TestConverter.toInt(registers[r]);
+            System.out.println(line);
+        }
+    }
+
+    private void debugReg(int start, int end) {
+        for (int i = start; i <= end; i++)
+            debugReg(i);
+    }
+
+    private void debugMem(int start, int end) {
+        for (int i = start; i <= end; i++)
+            debugMem(i);
+    }
+
+    private void debugMem(int... addresses) {
+        for (int a : addresses) {
+            Word32 addr = new Word32();
+            Word32 value = new Word32();
+            TestConverter.fromInt(a, addr);
+            addr.copy(l2.address);
+            l2.read();
+            l2.value.copy(value);
+            var line = a + ":" + value + " " + TestConverter.toInt(value);
+            System.out.println(line);
+        }
     }
 }

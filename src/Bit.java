@@ -98,5 +98,6 @@ public class Bit {
 
     public String toString() {
         return value == boolValues.TRUE ? "t" : "f";
+//        return value == boolValues.TRUE ? "1" : "0";
     }
 }
